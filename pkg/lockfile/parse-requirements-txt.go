@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/google/osv-scanner/internal/cachedregexp"
@@ -11,6 +12,13 @@ import (
 )
 
 const PipEcosystem Ecosystem = "PyPI"
+
+var (
+	reWhitespace                    = regexp.MustCompile(`[ \t\r]`)
+	reExtras                        = regexp.MustCompile(`\[[^\[\]]*\]`)
+	reTextAfterFirstOptionInclusive = regexp.MustCompile(`(?:--hash|--global-option|--config-settings|-C).*`)
+	reHashOption                    = regexp.MustCompile(`--hash=(.+?)(?:$|\s)`)
+)
 
 // todo: expand this to support more things, e.g.
 //
@@ -179,6 +187,17 @@ func parseRequirementsTxt(f DepFile, requiredAlready map[string]struct{}) ([]Pac
 			continue
 		}
 
+		// Per-requirement options may be present. We extract the --hash options, and discard the others.
+		l, _ := splitPerRequirementOptions(line)
+		l = removeWhiteSpaces(l)
+		l = ignorePythonSpecifier(l)
+		l = removeExtras(l)
+
+		if len(l) == 0 {
+			continue
+		}
+		line = l
+
 		detail := parseLine(line)
 		key := detail.Name + "@" + detail.Version
 		if _, ok := packages[key]; !ok {
@@ -208,4 +227,29 @@ func init() {
 // Deprecated: use RequirementsTxtExtractor.Extract instead
 func ParseRequirementsTxt(pathToLockfile string) ([]PackageDetails, error) {
 	return extractFromFile(pathToLockfile, RequirementsTxtExtractor{})
+}
+
+// Backported sanitizers from refactored OSV Scanner
+
+func removeWhiteSpaces(s string) string {
+	return reWhitespace.ReplaceAllString(s, "")
+}
+
+// splitPerRequirementOptions removes from the input all text after the first per requirement option
+// and returns the remaining input along with the values of the --hash options. See the documentation
+// in https://pip.pypa.io/en/stable/reference/requirements-file-format/#per-requirement-options.
+func splitPerRequirementOptions(s string) (string, []string) {
+	hashes := []string{}
+	for _, hashOptionMatch := range reHashOption.FindAllStringSubmatch(s, -1) {
+		hashes = append(hashes, hashOptionMatch[1])
+	}
+	return reTextAfterFirstOptionInclusive.ReplaceAllString(s, ""), hashes
+}
+
+func ignorePythonSpecifier(s string) string {
+	return strings.SplitN(s, ";", 2)[0]
+}
+
+func removeExtras(s string) string {
+	return reExtras.ReplaceAllString(s, "")
 }
